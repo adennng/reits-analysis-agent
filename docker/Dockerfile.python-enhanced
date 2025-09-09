@@ -1,0 +1,15 @@
+# Dockerfile.python-enhanced
+# 重新构建 python-enhanced:latest 镜像，包含 db_utils.py
+FROM python-enhanced:latest
+
+# 将db_utils.py复制到容器中的/app目录
+COPY db_utils.py /app/db_utils.py
+
+# 确保文件权限正确
+RUN chmod 644 /app/db_utils.py
+
+# 设置Python路径，确保可以导入db_utils
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# 验证db_utils.py可以正常导入
+RUN python -c "import db_utils; print('db_utils module loaded successfully')"

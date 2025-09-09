@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_increment:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: 'Mark as prerelease'
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Get version and generate changelog
+        id: get_version
+        run: |
+          # Get the latest tag or use v0.0.0 if no tags exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          
+          # Remove 'v' prefix for version calculations
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          
+          # Handle version increment based on input or default to patch
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            case "${{ inputs.version_increment }}" in
+              "major")
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              "minor")
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              "patch")
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+          else
+            # Auto increment patch version for push events
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          
+          # Function to extract and format issue/PR references
+          format_references() {
+            local msg="$1"
+            # Look for common issue/PR reference patterns (#123, GH-123, fixes #123, etc.)
+            local refs=$(echo "$msg" | grep -o -E '(#[0-9]+|GH-[0-9]+)' || true)
+            if [ ! -z "$refs" ]; then
+              local formatted_refs=""
+              while read -r ref; do
+                # Remove any prefix and get just the number
+                local num=$(echo "$ref" | grep -o '[0-9]\+')
+                formatted_refs="$formatted_refs [${ref}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${num})"
+              done <<< "$refs"
+              echo "$formatted_refs"
+            fi
+          }
+
+          # Function to format commit messages by type
+          format_commits() {
+            local pattern=$1
+            local title=$2
+            # Include author, date, and full commit info
+            local commits=$(git log --pretty=format:"- %s ([%h](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/%H)) - %an, %as" ${LATEST_TAG}..HEAD | grep -E "^$pattern" || true)
+            if [ ! -z "$commits" ]; then
+              echo "### $title"
+              while IFS= read -r commit; do
+                if [ ! -z "$commit" ]; then
+                  # Extract the commit message for issue/PR reference search
+                  local commit_msg=$(echo "$commit" | sed -E 's/^- ([^(]+).*/\1/')
+                  local refs=$(format_references "$commit_msg")
+                  if [ ! -z "$refs" ]; then
+                    # Add references to the end of the commit line
+                    echo "$commit - References: $refs"
+                  else
+                    echo "$commit"
+                  fi
+                fi
+              done <<< "$commits" | sed 's/^[^:]*: //'
+              echo ""
+            fi
+          }
+          
+          # Generate categorized changelog
+          if [ "$LATEST_TAG" != "v0.0.0" ]; then
+            CHANGES=$(
+              {
+                echo "## 📋 Changelog"
+                echo "$(git log -1 --pretty=format:"Generated on: %ad" --date=format:"%Y-%m-%d %H:%M:%S %Z")"
+                echo ""
+                format_commits "feat(\w*)?:" "🚀 New Features"
+                format_commits "fix(\w*)?:" "🐛 Bug Fixes"
+                format_commits "perf(\w*)?:" "⚡ Performance Improvements"
+                format_commits "refactor(\w*)?:" "♻️ Refactoring"
+                format_commits "test(\w*)?:" "🧪 Testing"
+                format_commits "docs(\w*)?:" "📚 Documentation"
+                format_commits "style(\w*)?:" "💎 Styling"
+                format_commits "chore(\w*)?:" "🔧 Maintenance"
+                
+                # Get other commits that don't match conventional commit format
+                echo "### 🔍 Other Changes"
+                git log --pretty=format:"- %s ([%h](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/%H)) - %an, %as" ${LATEST_TAG}..HEAD | grep -vE "^(feat|fix|perf|refactor|test|docs|style|chore)(\w*)?:" | while IFS= read -r commit; do
+                  if [ ! -z "$commit" ]; then
+                    local commit_msg=$(echo "$commit" | sed -E 's/^- ([^(]+).*/\1/')
+                    local refs=$(format_references "$commit_msg")
+                    if [ ! -z "$refs" ]; then
+                      echo "$commit - References: $refs"
+                    else
+                      echo "$commit"
+                    fi
+                  fi
+                done || true
+              } | sed '/^$/d'
+            )
+          else
+            # For first release, include all commits with metadata and links
+            CHANGES=$(
+              {
+                echo "## 📋 Initial Release Changelog"
+                echo "$(git log -1 --pretty=format:"Generated on: %ad" --date=format:"%Y-%m-%d %H:%M:%S %Z")"
+                echo ""
+                git log --pretty=format:"- %s ([%h](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/%H)) - %an, %as" | while IFS= read -r commit; do
+                  if [ ! -z "$commit" ]; then
+                    local commit_msg=$(echo "$commit" | sed -E 's/^- ([^(]+).*/\1/')
+                    local refs=$(format_references "$commit_msg")
+                    if [ ! -z "$refs" ]; then
+                      echo "$commit - References: $refs"
+                    else
+                      echo "$commit"
+                    fi
+                  fi
+                done
+              }
+            )
+          fi
+          
+          # Save changes to output
+          echo "changes<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          chmod +x build.sh
+          ./build.sh --release --version ${{ steps.get_version.outputs.version }}
+
+      - name: Generate checksums
+        run: |
+          cd bin
+          echo "### 🔒 SHA256 Checksums" > checksums.txt
+          echo '```' >> checksums.txt
+          sha256sum code-sandbox-mcp-* >> checksums.txt
+          echo '```' >> checksums.txt
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          files: |
+            bin/code-sandbox-mcp-linux-amd64
+            bin/code-sandbox-mcp-linux-arm64
+            bin/code-sandbox-mcp-darwin-amd64
+            bin/code-sandbox-mcp-darwin-arm64
+            bin/code-sandbox-mcp-windows-amd64.exe
+            bin/code-sandbox-mcp-windows-arm64.exe
+          body: |
+            ## 🎉 Release v${{ steps.get_version.outputs.version }}
+            
+            ${{ steps.get_version.outputs.changes }}
+            
+            ### 📦 Included Binaries
+            - 🐧 Linux (amd64, arm64)
+            - 🍎 macOS (amd64, arm64)
+            - 🪟 Windows (amd64, arm64)
+            
+            $(cat bin/checksums.txt) 

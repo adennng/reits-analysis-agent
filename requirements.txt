@@ -1,0 +1,42 @@
+# 核心依赖
+openai-agents>=1.0.0
+openai>=1.0.0
+pymysql>=1.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 向量数据库和搜索
+pymilvus>=2.3.0
+elasticsearch>=8.0.0
+
+# 数据处理和可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# 异步处理
+asyncio-mqtt>=0.11.0
+aiofiles>=23.0.0
+
+# 文档处理
+pypdf>=3.0.0
+python-docx>=0.8.11
+
+# 配置管理
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# 工具库
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# 开发工具 (可选)
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# Jupyter (可选)
+jupyter>=1.0.0
+ipykernel>=6.25.0

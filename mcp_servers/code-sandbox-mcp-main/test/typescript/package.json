@@ -1,0 +1,15 @@
+{
+  "name": "test",
+  "version": "1.0.0",
+  "main": "test.ts",
+  "scripts": {
+    "test": "test.ts",
+    "start": "node test.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@automatalabs/mcp-server-playwright": "^1.2.1"
+  }
+}

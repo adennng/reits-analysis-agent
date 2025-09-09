@@ -1,0 +1,7 @@
+venv/
+.env
+bin/
+.DS_Store
+# Test directory
+test_code/*
+src/code-sandbox-mcp/vendor

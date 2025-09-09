@@ -1,0 +1,10 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Treat media as binary (no diff)
+*.mp4 binary
+*.mov binary
+*.avi binary
+*.png binary
+*.jpg binary
+*.jpeg binary

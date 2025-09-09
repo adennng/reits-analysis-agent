@@ -1,0 +1,61 @@
+FROM python-enhanced:latest
+
+# 1. 安装 Noto CJK 中文字体并刷新系统字体缓存
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig \
+ && fc-cache -f -v \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 2. 写入 matplotlibrc 并刷新 matplotlib 缓存
+RUN python - <<'PY'
+import pathlib, matplotlib, matplotlib.font_manager as fm
+cfg = pathlib.Path(matplotlib.get_configdir()) / 'matplotlibrc'
+cfg.parent.mkdir(parents=True, exist_ok=True)
+cfg.write_text(
+    "font.family : sans-serif\n"
+    "font.sans-serif : Noto Sans CJK JP, DejaVu Sans\n"
+    "axes.unicode_minus : False\n"
+)
+
+# 额外写入 sitecustomize.py 确保别名映射
+import sys, textwrap, importlib.util, importlib.machinery
+site_path = pathlib.Path(sys.prefix)/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'/'site-packages'/'sitecustomize.py'
+site_path.write_text(textwrap.dedent("""
+import matplotlib
+# Ensure Chinese font alias always exists
+matplotlib.rcParams.setdefault('font.family', 'sans-serif')
+# prefer JP variant which is present in Noto TTC
+matplotlib.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+"""))
+print('sitecustomize.py written to', site_path)
+fm._rebuild()
+print('matplotlibrc written to', cfg)
+PY
+
+# 3. 彻底替换 matplotlib 默认 rc，确保任何脚本都生效
+RUN python - <<'PY'
+import matplotlib, pathlib, sys
+rc_path = pathlib.Path(matplotlib.get_data_path()) / 'matplotlibrc'
+text = rc_path.read_text()
+# 替换 font.family 行
+import re
+text = re.sub(r'^font.family\s*:.*$', 'font.family : sans-serif', text, flags=re.MULTILINE)
+# 追加或替换 sans-serif 列表
+if 'font.sans-serif' in text:
+    text = re.sub(r'^font.sans-serif\s*:.*$', 'font.sans-serif : Noto Sans CJK JP, DejaVu Sans', text, flags=re.MULTILINE)
+else:
+    text += "\nfont.sans-serif : Noto Sans CJK JP, DejaVu Sans"
+
+if 'axes.unicode_minus' in text:
+    text = re.sub(r'^axes.unicode_minus\s*:.*$', 'axes.unicode_minus : False', text, flags=re.MULTILINE)
+else:
+    text += "\naxes.unicode_minus : False\n"
+
+rc_path.write_text(text)
+print('🔧 Patched default matplotlibrc at', rc_path)
+PY
+
+# 3.5: 设置系统级 matplotlibrc 并通过环境变量强制使用（双保险）
+RUN echo "font.family : sans-serif\nfont.sans-serif : Noto Sans CJK JP, DejaVu Sans\naxes.unicode_minus : False\n" > /etc/matplotlibrc
+ENV MATPLOTLIBRC=/etc/matplotlibrc
