@@ -10,7 +10,7 @@ Agent1专门工具集合
 import sys
 import os
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # 添加路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -600,6 +600,7 @@ class FileLinkEnhancer:
                 print(f"[FileLinkEnhancer] ✅ 数据库连接初始化成功")
             
             # 查询announcement数据库的processed_files表
+            # 注意：需要手动转义文件名中的单引号防止SQL注入
             escaped_file_name = file_name.replace("'", "\\'")
             sql = f"SELECT announcement_link FROM processed_files WHERE file_name = '{escaped_file_name}' LIMIT 1"
             print(f"[FileLinkEnhancer] 🔍 执行SQL查询: {sql}")
@@ -865,7 +866,13 @@ class FinalAnswerGenerator:
                 "error": f"JSON解析失败: {str(e)}"
             }
     
-    async def generate(self, question: str, all_results: list, context: dict) -> str:
+    async def generate(
+        self,
+        question: str,
+        all_results: list,
+        context: dict,
+        precomposed_answer: Optional[str] = None
+    ) -> str:
         """
         最终答案生成 - 返回直接用户可读文本
         
@@ -883,6 +890,22 @@ class FinalAnswerGenerator:
         print(f"  上下文阶段: {context.get('current_stage', 'unknown')}")
         
         try:
+            prepared_answer = precomposed_answer or context.get("precomposed_answer")
+            if isinstance(prepared_answer, str):
+                prepared_answer = prepared_answer.strip()
+            else:
+                prepared_answer = None
+
+            if prepared_answer:
+                print("[FinalAnswerGenerator] 检测到预生成答案，跳过LLM生成")
+                try:
+                    enhanced_prepared = self.file_link_enhancer.enhance_answer_with_links(prepared_answer)
+                    print("[FinalAnswerGenerator] 预生成答案链接增强完成")
+                    return enhanced_prepared
+                except Exception as e:
+                    print(f"[FinalAnswerGenerator] 预生成答案链接增强失败: {e}，返回原始答案")
+                    return prepared_answer
+
             # 准备LLM提示词，传递完整的上下文信息
             import json as json_module
             prompt = self.prompt_template.format(
