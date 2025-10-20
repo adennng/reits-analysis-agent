@@ -41,8 +41,9 @@ except ImportError:
             pass
 
 # 导入配置和工具
+# 注意：新架构不再需要ANNOUNCEMENT_QUERY_AGENT_INSTRUCTIONS
 from config.model_config import get_deepseek_v3_model
-from business_tools import query_prospectus_files
+from finetune.prospectus_finetune_runner import run_prospectus_finetune_session
 
 # 导入Agent1专门工具
 try:
@@ -87,6 +88,7 @@ class ProcessingContext:
         self.retrieval_results = []
         self.processing_history = []
         self.current_stage = 1
+        self.precomposed_answer: Optional[str] = None  # 🆕 新增：预生成答案
         
         # 兼容性字段（保持与原有代码的兼容）
         self.attempt_number = 1
@@ -102,6 +104,7 @@ class ProcessingContext:
             "file_names": self.file_names,      # 🆕 包含文件名列表
             "processing_history": self.processing_history,
             "current_stage": self.current_stage,
+            "precomposed_answer": self.precomposed_answer,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -274,7 +277,8 @@ class AnnouncementQueryAgent:
         final_answer_text = await self.answer_generator.generate(
             question=user_query.question,
             all_results=context.retrieval_results,
-            context=context.to_dict()
+            context=context.to_dict(),
+            precomposed_answer=context.precomposed_answer
         )
         
         # 记录最终答案生成步骤
@@ -303,7 +307,7 @@ class AnnouncementQueryAgent:
         if not context.fund_codes or context.attempt_number > 1:
             context.current_stage = 2
             print("[AnnouncementQueryAgent] 阶段2: 基金代码识别")
-            
+
             # 使用新的专业化工具类
             fund_result = await self.fund_identifier.identify(
                 question=user_query.question,
@@ -332,7 +336,13 @@ class AnnouncementQueryAgent:
             
             if not context.fund_codes:
                 raise Exception("未能识别到任何基金代码")
-        
+
+        # 招募说明书查询改走 Finetune 流程
+        if user_query.is_prospectus_query:
+            print("[AnnouncementQueryAgent] 检测到招募说明书查询，启动Finetune流程")
+            context.current_stage = 3
+            return await self._execute_prospectus_finetune(user_query, context)
+
         # 阶段3: 文件范围确定
         context.current_stage = 3
         print("[AnnouncementQueryAgent] 阶段3: 文件范围确定")
@@ -381,7 +391,104 @@ class AnnouncementQueryAgent:
             context.add_step_result("agent2_execution_failed", error_result)
             
             return error_result
-    
+
+    async def _execute_prospectus_finetune(
+        self,
+        user_query: UserQuery,
+        context: ProcessingContext
+    ) -> Dict[str, Any]:
+        """使用Finetune系统执行招募说明书检索"""
+
+        print("[AnnouncementQueryAgent] 进入Finetune招募说明书检索流程")
+        formatted_codes = "、".join(context.fund_codes)
+        formatted_question = (
+            f"系统识别出用户问题中涉及的准确的基金代码是{formatted_codes}，"
+            f"用户提问的问题是：{user_query.question}"
+        )
+
+        context.add_step_result(
+            "prospectus_finetune_request",
+            {
+                "formatted_question": formatted_question,
+                "fund_codes": context.fund_codes,
+                "original_question": user_query.question,
+            }
+        )
+
+        print(f"[AnnouncementQueryAgent] Finetune输入问题: {formatted_question}")
+
+        finetune_result = run_prospectus_finetune_session(
+            formatted_question,
+            is_expansion=False,
+        )
+
+        success = finetune_result.get("success", False)
+        error_message = finetune_result.get("error")
+        raw_answer = (finetune_result.get("final_answer") or "").strip()
+        source_files = [
+            file_name.strip()
+            for file_name in finetune_result.get("source_files", [])
+            if isinstance(file_name, str) and file_name.strip()
+        ]
+
+        print(f"[AnnouncementQueryAgent] Finetune检索完成，success={success}")
+        print(f"[AnnouncementQueryAgent] Finetune返回的源文件: {source_files}")
+
+        # 处理答案
+        if not raw_answer:
+            raw_answer = "很抱歉，未找到相关答案。"
+            success = False
+
+        reference_lines = [f"{idx + 1}. {file_name}" for idx, file_name in enumerate(source_files)]
+        if reference_lines:
+            final_answer_text = raw_answer + "\n\n参考文件：\n" + "\n".join(reference_lines)
+        else:
+            final_answer_text = raw_answer
+
+        context.precomposed_answer = final_answer_text
+        context.file_names = source_files
+        context.add_step_result(
+            "prospectus_finetune_result",
+            {
+                "success": success,
+                "error": error_message,
+                "source_files": source_files,
+                "final_answer": final_answer_text,
+            }
+        )
+
+        result_items = []
+        file_for_entry = source_files[0] if source_files else None
+        for fund_code in context.fund_codes or [""]:
+            result_items.append({
+                "fund_code": fund_code,
+                "question": user_query.question,
+                "file_name": file_for_entry,
+                "answer": final_answer_text,
+                "sources": source_files,
+                "is_found": success,
+                "retrieval_method": "prospectus_finetune",
+                "error": None if success else (error_message or "未找到相关答案"),
+            })
+
+        total_queries = len(result_items) if result_items else 1
+        successful_queries = total_queries if success else 0
+        failed_queries = 0 if success else total_queries
+
+        attempt_result = {
+            "success": success,
+            "error": None if success else (error_message or "未找到相关答案"),
+            "total_queries": total_queries,
+            "successful_queries": successful_queries,
+            "failed_queries": failed_queries,
+            "results": result_items,
+            "summary": (
+                f"完成 {total_queries} 个招募说明书检索，成功 {successful_queries} 个，失败 {failed_queries} 个"
+            )
+        }
+
+        return attempt_result
+
     async def _determine_file_scope(self, user_query: UserQuery, context: ProcessingContext):
         """
         确定文件检索范围 - 简化的二分支逻辑
@@ -391,24 +498,12 @@ class AnnouncementQueryAgent:
             context: 处理上下文对象
         """
         if user_query.is_prospectus_query:
-            # 分支A：招募说明书查询（保持现有逻辑）
-            print("[AnnouncementQueryAgent] 分支A: 招募说明书查询")
-            
-            # 保存原有的file_names作为备份
-            original_file_names = context.file_names.copy() if context.file_names else None
-            
-            try:
-                await self._handle_prospectus_query(context)
-                print(f"[AnnouncementQueryAgent] 招募说明书查询成功，获得 {len(context.file_names)} 个文件")
-            except Exception as e:
-                print(f"[AnnouncementQueryAgent] 招募说明书查询失败: {e}")
-                # 恢复原有的file_names
-                if original_file_names is not None:
-                    context.file_names = original_file_names
-                    print(f"[AnnouncementQueryAgent] 恢复原有文件列表: {len(context.file_names)} 个文件")
-                else:
-                    context.file_names = [None]  # 设置为全库检索
-                    print("[AnnouncementQueryAgent] 设置为全库检索")
+            print("[AnnouncementQueryAgent] 招募说明书查询已由Finetune流程接管，跳过文件范围确定")
+            context.add_step_result(
+                "file_scope_skipped_for_prospectus",
+                {"reason": "handled_by_finetune", "file_names": context.file_names}
+            )
+            return
         else:
             # 分支B：使用上层传递的文件列表或全库检索
             print("[AnnouncementQueryAgent] 分支B: 使用上层传递的文件列表")
@@ -419,32 +514,6 @@ class AnnouncementQueryAgent:
             
             # 记录步骤结果
             context.add_step_result("file_scope_provided", {"file_names": context.file_names})
-    
-    async def _handle_prospectus_query(self, context: ProcessingContext):
-        """处理招募说明书查询"""
-        print("[AnnouncementQueryAgent] 处理招募说明书查询")
-        all_files = []
-        
-        for fund_code in context.fund_codes:
-            try:
-                prospectus_result = query_prospectus_files(fund_code)
-                if prospectus_result["success"]:
-                    if prospectus_result.get("initial_file"):
-                        all_files.append(prospectus_result["initial_file"])
-                    if prospectus_result.get("expansion_file"):
-                        all_files.append(prospectus_result["expansion_file"])
-                    
-                    print(f"[AnnouncementQueryAgent] {fund_code} 招募说明书文件查询成功")
-                else:
-                    print(f"[AnnouncementQueryAgent] {fund_code} 招募说明书查询失败: {prospectus_result.get('error')}")
-                    
-            except Exception as e:
-                print(f"[AnnouncementQueryAgent] {fund_code} 招募说明书查询异常: {e}")
-        
-        context.file_names = all_files
-        print(f"[AnnouncementQueryAgent] 招募说明书查询完成，共获得 {len(all_files)} 个文件")
-        context.add_step_result("file_scope_prospectus", {"file_names": all_files})
-    
     
     async def _organize_query_parameters(self, user_query: UserQuery, context: ProcessingContext):
         """
