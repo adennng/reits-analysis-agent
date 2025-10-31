@@ -662,13 +662,9 @@ Agent2 内部使用 **政策混合检索工具**，该工具执行严格的 8 �
 - Milvus 向量数据库
 - Elasticsearch
 
-### 安装与运行
+### 配套数据
 
-1. 克隆本仓库并安装依赖：
-   - `pip install -r requirements.txt`
-2. 复制 `.env.example` 为 `.env`，填写数据库、向量库、Elasticsearch 以及各模型 API Key：
-   - `cp .env.example .env`
-3. 运行你需要的 Agent 或调用相应的工具（示例见 `kr_agents/`）。
+- 招募说明书和公告信息检索板块的数据为全部公募reits公告文件信息，在项目建立前已将文本信息清洗并切分成文本块（每个文本块字符数量在200-1000之间），并保存至Elasticsearch、转为向量保存至向量数据库。文件整个清洗及入库流程见 [RAG-REITsTextFlow](https://github.com/adennng/RAG-REITsTextFlow)，该流程可自动处理跨页表格、提取全部文字、表格信息，适用于公告类 PDF 文件。（获取或调用数据可联系作者）
 
 ## 🏗️ 项目结构
 
